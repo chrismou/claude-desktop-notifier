@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/absolute/path/to/claude-desktop-notifier/bin/claude-attention-hook.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
