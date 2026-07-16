@@ -34,7 +34,7 @@ sudo apt install libnotify-bin jq
 ### macOS
 
 - `osascript` — built-in on all macOS versions; no install needed
-- `jq` — **not preinstalled on macOS**; install via Homebrew:
+- `jq` — **ships with macOS 15 Sequoia and later** (`/usr/bin/jq`); nothing to install. On macOS 14 and earlier, install it yourself — Homebrew is the common route, but MacPorts or a [release binary](https://jqlang.github.io/jq/download/) work too:
 
 ```sh
 brew install jq
@@ -58,7 +58,7 @@ The plugin cannot install OS packages. You must install these yourself before ru
 sudo apt install libnotify-bin jq
 ```
 
-**macOS:**
+**macOS:** nothing needed on macOS 15 Sequoia and later (`jq` ships with the OS). On macOS 14 and earlier:
 ```sh
 brew install jq
 ```
