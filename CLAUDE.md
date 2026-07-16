@@ -21,7 +21,7 @@ echo '{"hook_event_name":"Notification","message":"Claude needs your permission 
   | bin/claude-attention-hook.sh
 ```
 
-Expected: a notification titled "Claude needs attention" with body "foo", exit 0, no lingering process.
+Expected: a notification titled "foo needs attention" with body "Claude needs your permission to use Bash", exit 0, no lingering process.
 
 Install/uninstall (idempotent, back up and merge/prune `~/.claude/settings.json` via jq):
 
@@ -49,7 +49,7 @@ Three scripts, no background processes:
 - **Portability:** no `basename -- "$x"` (BSD basename mishandles `--`); use parameter expansion instead.
 - **Notification-only scope:** wire the `Notification` hook only (not `Stop`). No click-to-raise, no terminal/window activation, no focus-based suppression — always notify. These are deliberate decisions, not missing features.
 - **No new dependencies** beyond `jq` and the OS notification tool (no `terminal-notifier`, no Python, no D-Bus glue).
-- Notification body is just the project name (basename of `cwd`); the title is always "Claude needs attention". `URGENCY` tunable is Linux-only and silently ignored on macOS.
+- Notification format: title is "`<project>` needs attention" (project = basename of `cwd`, leading so title truncation never hides it); body is the payload's `message` text. Fallbacks: no derivable project (jq absent, or `cwd` missing/empty) → static title "Claude needs attention"; no derivable message → empty body. `URGENCY` tunable is Linux-only and silently ignored on macOS.
 - Settings merges must be surgical: never use a shallow `jq '.[0] * .[1]'` merge (it clobbers other `Notification` hooks); always append/prune within the array and write via a private temp file.
 
 ## Plugin install channel

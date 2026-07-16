@@ -14,7 +14,8 @@ set -euo pipefail
 URGENCY="critical"   # Linux: "critical" = persists in tray until dismissed
                      # Linux: "normal"   = auto-expires after a few seconds
 APP_NAME="Claude Code"
-TITLE="Claude needs attention"
+TITLE_SUFFIX="needs attention"           # title is "<project> <suffix>" when a project label is derived
+FALLBACK_TITLE="Claude needs attention"  # title when no project label can be derived (jq absent, cwd missing)
 # ────────────────────────────────────────────────────────────────────────────
 
 # ── Script-directory resolution ──────────────────────────────────────────────
@@ -38,8 +39,9 @@ if [ -z "$payload" ]; then
     exit 0
 fi
 
-# Default project label — used when jq is absent or cwd is missing/empty.
-project="unknown project"
+# Defaults — overridden below when jq can parse the payload.
+project=""   # empty = no project label derived → fallback title
+message=""   # empty = no message text → empty notification body
 
 # Detect jq availability once.  Standalone installs pass install.sh's preflight
 # (jq required), so jq is normally present.  Plugin installs have no preflight —
@@ -55,14 +57,15 @@ if command -v jq >/dev/null 2>&1; then
     fi
 
     # Extract fields with jq (-r for raw strings, empty string on missing/null).
-    # Only cwd is shown; the notification body is intentionally just the project
-    # name (the title already says "Claude needs attention"), so message is unused.
+    # cwd drives the project label in the title; message becomes the body
+    # (e.g. "Claude needs your permission to use Bash").
     cwd="$(printf '%s' "$payload" | jq -r '.cwd // ""')" || cwd=""
+    message="$(printf '%s' "$payload" | jq -r '.message // ""')" || message=""
 
     # Derive a friendly project label from cwd.
     #   1. basename of cwd   (the common case)
     #   2. full cwd          (if basename somehow came out empty, e.g. cwd is "/")
-    #   3. generic fallback  (if cwd itself is absent/empty — uses default above)
+    #   3. no label          (if cwd itself is absent/empty — fallback title below)
     # Use bash parameter expansion (${cwd##*/}) rather than `basename` — the GNU
     # `basename -- "$cwd"` idiom is NOT portable: BSD basename on macOS treats `--`
     # as the string argument and would emit a literal "--". Parameter expansion is
@@ -83,11 +86,21 @@ else
     echo "claude-attention-hook.sh: jq not found — showing generic notification; install jq (apt install jq / brew install jq) to see project names" >&2
 fi
 
-# Build notification body: just the project label (no message text — the title
-# already conveys "needs attention", so repeating it would be redundant).
-# The project label is load-bearing when multiple sessions are running in
-# parallel — it tells the user which terminal to switch to.
-body="$project"
+# Build title and body.  The title LEADS with the project label
+# ("<project> needs attention") because notification titles truncate at
+# roughly 30-40 chars on both GNOME and macOS — project-first means
+# truncation eats the boilerplate, never the label.  The label is
+# load-bearing when multiple sessions run in parallel — it tells the user
+# which terminal to switch to.  When no label could be derived (jq absent,
+# or cwd missing/empty) fall back to a static title.
+# The body is the hook's message text (why attention is needed); it may be
+# empty (message missing, or jq absent) — both emitters accept an empty body.
+if [ -n "$project" ]; then
+    title="${project} ${TITLE_SUFFIX}"
+else
+    title="$FALLBACK_TITLE"
+fi
+body="$message"
 
 # ── Emitters ────────────────────────────────────────────────────────────────
 
@@ -104,14 +117,14 @@ emit_linux() {
             -a "$APP_NAME" \
             -i "$ICON" \
             -- \
-            "$TITLE" \
+            "$title" \
             "$body"
     else
         notify-send \
             -u "$URGENCY" \
             -a "$APP_NAME" \
             -- \
-            "$TITLE" \
+            "$title" \
             "$body"
     fi
 }
@@ -130,7 +143,7 @@ emit_macos() {
     # into the script text. This is injection-proof for ANY content (quotes,
     # backslashes, newlines, AppleScript keywords) and avoids relying on the
     # undocumented `\"` escape behaviour of osascript's string literals.
-    osascript - "$body" "$TITLE" <<'APPLESCRIPT'
+    osascript - "$body" "$title" <<'APPLESCRIPT'
 on run argv
     display notification (item 1 of argv) with title (item 2 of argv)
 end run

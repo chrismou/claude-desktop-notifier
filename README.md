@@ -4,7 +4,7 @@ Emits a native desktop notification when a running Claude Code session needs att
 
 Works on **Linux** (GNOME/libnotify via `notify-send`) and **macOS** (Notification Center via `osascript`).
 
-The notification body is the **project name** (derived from the working directory), so you know which terminal to switch to when running multiple sessions in parallel. The title always reads "Claude needs attention".
+The notification title leads with the **project name** (derived from the working directory) — e.g. **"my-project needs attention"** — so you know which terminal to switch to at a glance, even when the notification renders truncated or collapsed. The body is Claude Code's message text (e.g. "Claude needs your permission to use Bash").
 
 This is a notify-only tool. There is no click-to-raise, no terminal activation, and no external dependencies beyond the OS notification tool and `jq`.
 
@@ -12,8 +12,8 @@ This is a notify-only tool. There is no click-to-raise, no terminal activation, 
 
 Claude Code fires a `Notification` hook event when it needs input. This tool wires that hook to a shell script that emits a native notification like:
 
-> **Claude needs attention**
-> my-project
+> **my-project needs attention**
+> Claude needs your permission to use Bash
 
 On Linux the notification uses `critical` urgency by default, so it persists in the GNOME notification tray until dismissed. On macOS, Notification Center banners auto-dismiss (see [macOS notes](#macos) below).
 
@@ -63,7 +63,7 @@ sudo apt install libnotify-bin jq
 brew install jq
 ```
 
-If `jq` is not installed, the hook still fires and you still get a **"Claude needs attention"** notification, but the body reads **"unknown project"** instead of the actual project name. Claude Code is never blocked.
+If `jq` is not installed, the hook still fires and you still get a notification, but it degrades to the generic title **"Claude needs attention"** with an empty body — no project name, no message text. Claude Code is never blocked.
 
 ### Plugin uninstall
 
@@ -122,7 +122,7 @@ This removes only this tool's hook entry from `~/.claude/settings.json`. All oth
 ## macOS notes {#macos}
 
 - **Persistence:** macOS Notification Center banners auto-dismiss after a few seconds. There is no persistent/never-expire equivalent using built-in `osascript` (that would require `terminal-notifier`, which is out of scope). If you need a persistent notification, check Notification Center after the banner disappears.
-- **App attribution:** notifications posted by `osascript` appear as coming from **"Script Editor"** (the host app that owns the AppleScript runtime), not "Claude Code". This is expected and is not a bug. The project name appears in the notification body, which is the load-bearing content. Changing the attributed app name would require a bundled `.app`, which is out of scope.
+- **App attribution:** notifications posted by `osascript` appear as coming from **"Script Editor"** (the host app that owns the AppleScript runtime), not "Claude Code". This is expected and is not a bug. The project name appears in the notification title, which is the load-bearing content. Changing the attributed app name would require a bundled `.app`, which is out of scope.
 - **Notification permission:** the first time `osascript` posts a notification, macOS may show a permission prompt for "Script Editor". Grant it to allow notifications. If notifications don't appear, check System Settings → Notifications → Script Editor.
 - **Focus/Do Not Disturb:** macOS Focus and Do Not Disturb modes suppress notification banners. If you don't see a banner, check your Focus settings.
 - **Urgency:** the `URGENCY` tunable in `bin/claude-attention-hook.sh` applies to Linux only. On macOS it is silently ignored — there is no supported urgency knob for `osascript` notifications.
@@ -196,7 +196,7 @@ echo '{"hook_event_name":"Notification","message":"Claude needs your permission 
   | bin/claude-attention-hook.sh
 ```
 
-You should see a notification titled **"Claude needs attention"** with body **"foo"** (the basename of `cwd`), and the script should exit 0 immediately with no lingering process.
+You should see a notification titled **"foo needs attention"** (project name = basename of `cwd`) with body **"Claude needs your permission to use Bash"** (the payload's `message`), and the script should exit 0 immediately with no lingering process.
 
 ## Troubleshooting
 
@@ -228,10 +228,10 @@ You should see a notification titled **"Claude needs attention"** with body **"f
 
 ### Both platforms
 
-**Notification says "unknown project":**
+**Notification title is just "Claude needs attention" with no project name:**
 
-- The hook payload had no `cwd` field. This should not happen in normal use; check Claude Code's hook event format.
-- `jq` is not installed. The hook still fires and you get a notification, but the body reads "unknown project" instead of the actual project name. Install `jq` per the [Dependencies](#dependencies) section above; Claude Code is never blocked.
+- `jq` is not installed. The hook still fires but degrades to the generic title with an empty body. Install `jq` per the [Dependencies](#dependencies) section above; Claude Code is never blocked.
+- The hook payload had no `cwd` field (the message body still shows). This should not happen in normal use; check Claude Code's hook event format.
 
 **Duplicate notifications after re-running install.sh:**
 
@@ -250,8 +250,8 @@ Claude Code fires Notification hook (JSON on stdin)
       |
       v
 bin/claude-attention-hook.sh
-      |  jq: parse cwd
-      |  derive project label; build title + body (body = "<project>")
+      |  jq: parse cwd + message
+      |  derive project label; title = "<project> needs attention", body = "<message>"
       |
       +--[Linux]--> notify-send -u critical -a "Claude Code" [-i <icon>] -- "<title>" "<body>"
       |             (D-Bus -> GNOME Shell shows notification; notify-send exits immediately)
