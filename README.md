@@ -79,7 +79,11 @@ If you previously ran `./install.sh` **and** then install the plugin (or vice ve
 
 ### Tuning from the plugin channel
 
-The `URGENCY` tunable and the replaceable `assets/claude-icon.svg` live inside the plugin cache (`~/.claude/plugins/cache/...`), which is **overwritten on plugin update** — local edits there are ephemeral. If you want persistent tuning (urgency, icon), use the [standalone install](#installation) instead.
+The replaceable `assets/claude-icon.svg` lives inside the plugin cache (`~/.claude/plugins/cache/...`), which is **overwritten on plugin update** — local edits there are lost.
+
+Urgency, however, is configured via the `env` block in `~/.claude/settings.json` (see [Customization → Notification urgency](#customization)) — this **survives plugin updates** and works for both the plugin and standalone install channels.
+
+If you want a persistent custom icon, use the [standalone install](#installation) instead.
 
 ---
 
@@ -117,7 +121,7 @@ Or restart Claude Code.
 ./uninstall.sh
 ```
 
-This removes only this tool's hook entry from `~/.claude/settings.json`. All other settings are left intact. The operation is idempotent and backs up the file first.
+This removes only this tool's hook entry from `~/.claude/settings.json`. All other settings are left intact. The operation is idempotent and backs up the file first. It also removes the notifier's ephemeral state directory (used for per-project notification replacement on Linux), which is cleaned up automatically on logout or reboot anyway.
 
 ## macOS notes {#macos}
 
@@ -125,7 +129,7 @@ This removes only this tool's hook entry from `~/.claude/settings.json`. All oth
 - **App attribution:** notifications posted by `osascript` appear as coming from **"Script Editor"** (the host app that owns the AppleScript runtime), not "Claude Code". This is expected and is not a bug. The project name appears in the notification title, which is the load-bearing content. Changing the attributed app name would require a bundled `.app`, which is out of scope.
 - **Notification permission:** the first time `osascript` posts a notification, macOS may show a permission prompt for "Script Editor". Grant it to allow notifications. If notifications don't appear, check System Settings → Notifications → Script Editor.
 - **Focus/Do Not Disturb:** macOS Focus and Do Not Disturb modes suppress notification banners. If you don't see a banner, check your Focus settings.
-- **Urgency:** the `URGENCY` tunable in `bin/claude-attention-hook.sh` applies to Linux only. On macOS it is silently ignored — there is no supported urgency knob for `osascript` notifications.
+- **Urgency:** the `CLAUDE_NOTIFY_URGENCY` environment variable (and the `URGENCY` constant in `bin/claude-attention-hook.sh`) applies to Linux only. On macOS both are silently ignored — there is no supported urgency knob for `osascript` notifications. macOS Notification Center banners auto-dismiss regardless.
 - **Shell compatibility:** the hook script targets `bash 3.2` (the version shipped with macOS). It uses no bash-4-only features (`declare -A`, `${var^^}`, `mapfile`). The shebang is `#!/usr/bin/env bash`; the script always runs under bash even on systems where the default login shell is zsh.
 
 ## Manual installation
@@ -166,16 +170,53 @@ jq '.hooks.Notification = ((.hooks.Notification // []) + [{
   && mv "$tmp" ~/.claude/settings.json
 ```
 
-## Tuning
+## Customization
 
-The notification urgency is a constant at the top of `bin/claude-attention-hook.sh`:
+### Notification urgency (Linux)
+
+On Linux, you can choose between two urgency levels:
+
+- **`critical`** (default) — persists in the notification tray until you dismiss it. Correct for an attention notifier: you won't miss it.
+- **`normal`** — auto-expires after a few seconds. Use this if you find persistent notifications intrusive.
+
+The recommended way to set urgency is via the `env` block in your `~/.claude/settings.json`. This works for **both the standalone and plugin install channels** and **persists across plugin updates**:
+
+```json
+{
+  "env": {
+    "CLAUDE_NOTIFY_URGENCY": "normal"
+  }
+}
+```
+
+If you set an invalid value (e.g. `urgent` or `high`), the hook logs a warning to stderr and falls back to `critical`, ensuring notifications always fire. The default is always `critical` when the variable is not set.
+
+Alternatively, if you prefer not to edit `settings.json`, you can edit the `URGENCY` constant directly in `bin/claude-attention-hook.sh` (standalone install only):
 
 ```sh
 URGENCY="critical"   # Linux: persists in tray until dismissed
 # URGENCY="normal"   # Linux: auto-expires after a few seconds
 ```
 
-Change `critical` to `normal` if you prefer auto-expiring notifications on Linux. This setting has no effect on macOS.
+This in-file approach works for standalone installs, but edits are **lost on plugin update** — the `env` method is more durable for the plugin channel.
+
+**Note:** This setting applies to Linux only. On macOS, the `URGENCY` environment variable and the constant in the script are silently ignored — Notification Center banners auto-dismiss regardless.
+
+### Notification replacement (Linux)
+
+On Linux, each project gets at most one active notification. When Claude needs your attention in the same project twice in a row, the second notification **replaces** the first — no more stacking notifications.
+
+This feature is **best-effort** and degrades gracefully depending on your notification daemon:
+
+- **Modern libnotify** (≥ 0.8.0) on GNOME, KDE Plasma, dunst, mako, or any freedesktop-compliant daemon: full support. Notifications are replaced per project; an id file is stored under `${XDG_RUNTIME_DIR:-/tmp}/claude-notifier/` to track the current notification.
+- **Older libnotify on GNOME** (no `--replace-id`/`--print-id` flags): fallback coalescing via GNOME's synchronous hint; no id files written. Same-named projects in different directories are still tracked separately.
+- **Older libnotify on other desktops**: no dedup — notifications stack as before. This is graceful degradation, not an error.
+
+The dedup key is based on the **full absolute path** of your working directory (hashed for safety), not just the project basename. This means two directories with the same name in different locations (`~/projects/foo` and `~/archived/foo`) keep separate notification slots — each sees at most one active notification, and both might be visible at the same time. This divergence from the notification title (which shows only the basename) is intentional.
+
+The state files are stored in `${XDG_RUNTIME_DIR:-/tmp}/claude-notifier/` — an ephemeral location cleared on logout or reboot. If the state directory is not writable, notifications still fire; dedup simply degrades to stacking behavior.
+
+**Note:** This feature applies to Linux only. On macOS, the macOS Notification Center handles this — banners auto-dismiss, so stacking is not an issue.
 
 ### Icon (Linux)
 

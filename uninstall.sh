@@ -77,6 +77,18 @@ printf '%s\n' "$UPDATED" > "$TMP_SETTINGS"
 mv "$TMP_SETTINGS" "$SETTINGS"
 
 echo "Removed hook entry from: $SETTINGS"
+
+# ── Clean up Linux notification state dir (best-effort) ──────────────────────
+# Removes per-project id files written by the dedup feature.  Guarded with
+# || true so this can NEVER fail the uninstall, even if the dir does not exist
+# or is not writable.  Targets only the current user's dir (matches exactly
+# the paths the hook creates: XDG primary or /tmp uid-suffixed fallback).
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    rm -rf "${XDG_RUNTIME_DIR}/claude-notifier" 2>/dev/null || true
+else
+    rm -rf "/tmp/claude-notifier-$(id -u)" 2>/dev/null || true
+fi
+
 echo ""
 echo "Uninstall complete."
 echo "  Restart Claude Code (claude) or run /hooks to apply the change."

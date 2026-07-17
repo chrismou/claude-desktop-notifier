@@ -9,14 +9,28 @@ set -euo pipefail
 # ── Tunables ────────────────────────────────────────────────────────────────
 # NOTE: URGENCY applies to Linux only.  On macOS, Notification Center has no
 # urgency/persistence knob (without terminal-notifier, which is out of scope).
-# The value below is silently ignored on macOS — do not try to map it to
-# anything there; there is no supported equivalent.
-URGENCY="critical"   # Linux: "critical" = persists in tray until dismissed
-                     # Linux: "normal"   = auto-expires after a few seconds
+# The value is silently ignored on macOS — do not try to map it to anything
+# there; there is no supported equivalent.
+#
+# Override via the CLAUDE_NOTIFY_URGENCY environment variable (set it in
+# ~/.claude/settings.json "env" block so it reaches the hook on BOTH the
+# standalone and plugin install channels and survives plugin updates):
+#   { "env": { "CLAUDE_NOTIFY_URGENCY": "normal" } }
+# Accepted values: "critical" (persists until dismissed) | "normal" (auto-expires).
+URGENCY="${CLAUDE_NOTIFY_URGENCY:-critical}"
 APP_NAME="Claude Code"
 TITLE_SUFFIX="needs attention"           # title is "<project> <suffix>" when a project label is derived
 FALLBACK_TITLE="Claude needs attention"  # title when no project label can be derived (jq absent, cwd missing)
 # ────────────────────────────────────────────────────────────────────────────
+
+# Validate URGENCY: whitelist to critical|normal; anything else falls back to critical.
+# This prevents a typo from silently killing notifications (an invalid -u value
+# makes notify-send error, which would be swallowed by || true → no notification).
+case "$URGENCY" in
+    critical|normal) : ;;
+    *) echo "claude-attention-hook.sh: unknown CLAUDE_NOTIFY_URGENCY='$URGENCY', using 'critical'" >&2
+       URGENCY="critical" ;;
+esac
 
 # ── Script-directory resolution ──────────────────────────────────────────────
 # Resolves the real directory of this script so that sibling assets (e.g. the
@@ -42,6 +56,7 @@ fi
 # Defaults — overridden below when jq can parse the payload.
 project=""   # empty = no project label derived → fallback title
 message=""   # empty = no message text → empty notification body
+cwd=""       # empty = jq absent or cwd missing; pre-init so emit_linux reads safely under set -u
 
 # Detect jq availability once.  Standalone installs pass install.sh's preflight
 # (jq required), so jq is normally present.  Plugin installs have no preflight —
@@ -105,27 +120,95 @@ body="$message"
 # ── Emitters ────────────────────────────────────────────────────────────────
 
 emit_linux() {
-    # Linux: emit via notify-send (libnotify -> GNOME Shell / notification daemon).
-    # Use -- before positional args so a body starting with '-' is not parsed as
-    # an option.  Title and body are separate argv elements — no eval, no command
-    # string construction.
-    # Pass the Claude icon (-i) only if the asset file exists alongside the script;
-    # a missing icon file never breaks the notification.
-    if [ -f "$ICON" ]; then
-        notify-send \
-            -u "$URGENCY" \
-            -a "$APP_NAME" \
-            -i "$ICON" \
-            -- \
-            "$title" \
-            "$body"
+    # Linux: emit via notify-send (libnotify → GNOME Shell / notification daemon).
+    # Build args once with set -- to avoid an icon × tier branch explosion.
+
+    set -- -u "$URGENCY" -a "$APP_NAME"
+    [ -f "$ICON" ] && set -- "$@" -i "$ICON"
+
+    # ── Dedup: one active notification per project ───────────────────────────
+    # Default: Tier 3 (plain emit, today's behavior — no dedup).
+    tier=3
+    key=""
+    id_file=""
+    prev_id=""
+
+    # Dedup is keyed on the FULL ABSOLUTE cwd (hashed), not the basename.
+    # Same basename in different locations → distinct notification slots.
+    # Skip dedup entirely when cwd is empty (jq absent, or cwd missing/empty):
+    # keying on an empty/constant string would make all project-less
+    # notifications replace each other.
+    if [ -n "$cwd" ]; then
+        # Hash the full path to a fixed-length, filename-safe key.
+        # cksum is POSIX and universally present on Linux; no new dependency.
+        # Strip the byte-count field, leaving only the checksum digits.
+        cksum_out="$(printf '%s' "$cwd" | cksum)"
+        key="${cksum_out%% *}"
+
+        # State dir: XDG_RUNTIME_DIR is per-user 0700 (preferred).
+        # /tmp fallback is uid-suffixed to prevent cross-user pre-creation on
+        # a shared host (XDG_RUNTIME_DIR is already per-user; /tmp is not).
+        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+            STATE_DIR="${XDG_RUNTIME_DIR}/claude-notifier"
+        else
+            STATE_DIR="/tmp/claude-notifier-$(id -u)"
+        fi
+        mkdir -p "$STATE_DIR" 2>/dev/null || true
+        # Guard: on shared /tmp, another user may have pre-created this path or
+        # planted a symlink. [ -O ] follows symlinks and tests effective ownership.
+        # If the dir is not ours, leave id_file empty so dedup degrades to Tier 3.
+        if [ -O "$STATE_DIR" ]; then
+            id_file="${STATE_DIR}/${key}"
+        else
+            id_file=""
+        fi
+
+        # Feature-detect --replace-id / --print-id (libnotify >= 0.8.0).
+        # Run inside an 'if' condition so grep's non-zero exit under set -e/pipefail
+        # cannot abort the function.
+        help_out="$(notify-send --help 2>&1 || true)"
+        if printf '%s' "$help_out" | grep -q -- '--replace-id' \
+           && printf '%s' "$help_out" | grep -q -- '--print-id'; then
+            # Tier 1: spec-compliant replaces_id — works on GNOME, KDE, dunst, mako.
+            tier=1
+            prev_id="$([ -n "$id_file" ] && cat "$id_file" 2>/dev/null || true)"
+            # Accept only a positive integer; discard stale or garbage content.
+            case "$prev_id" in ''|*[!0-9]*) prev_id="" ;; esac
+        else
+            # Tier 2: GNOME-only stateless fallback via synchronous hint.
+            # KDE does not reliably honour this hint — deliberately GNOME-only.
+            case "${XDG_CURRENT_DESKTOP:-}" in
+                *GNOME*|*gnome*) tier=2 ;;
+            esac
+        fi
+    fi
+
+    # ── Emit ─────────────────────────────────────────────────────────────────
+    # Use -- before positional args so a title/body starting with '-' is not
+    # parsed as an option.
+    if [ "$tier" = 1 ]; then
+        # Tier 1: request a printed id (-p) and replace the previous one (-r).
+        set -- "$@" -p
+        [ -n "$prev_id" ] && set -- "$@" -r "$prev_id"
+        set -- "$@" -- "$title" "$body"
+        new_id="$(notify-send "$@" 2>/dev/null || true)"
+        # Persist the new id only if it looks like a positive integer.
+        # State write is AFTER the emit so a write failure never suppresses
+        # the notification.
+        case "$new_id" in
+            ''|*[!0-9]*) : ;;
+            *) [ -n "$id_file" ] && { printf '%s' "$new_id" > "$id_file"; } 2>/dev/null || true ;;
+        esac
+    elif [ "$tier" = 2 ]; then
+        # Tier 2: GNOME-only stateless dedup via synchronous-hint tag.
+        # Keyed on the full-path hash (same basename, different dir → distinct slots).
+        set -- "$@" "--hint=string:x-canonical-private-synchronous:claude-${key}"
+        set -- "$@" -- "$title" "$body"
+        notify-send "$@"
     else
-        notify-send \
-            -u "$URGENCY" \
-            -a "$APP_NAME" \
-            -- \
-            "$title" \
-            "$body"
+        # Tier 3: plain emit (old libnotify on non-GNOME desktop). Notifications stack.
+        set -- "$@" -- "$title" "$body"
+        notify-send "$@"
     fi
 }
 
