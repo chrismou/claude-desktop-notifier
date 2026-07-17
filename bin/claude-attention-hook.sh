@@ -127,59 +127,56 @@ emit_linux() {
     [ -f "$ICON" ] && set -- "$@" -i "$ICON"
 
     # ── Dedup: one active notification per project ───────────────────────────
-    # Default: Tier 3 (plain emit, today's behavior — no dedup).
-    tier=3
-    key=""
+    # Replace-by-id (libnotify >= 0.8.0) gives true notification-center dedup
+    # across daemons (GNOME, KDE, dunst, mako).  There is NO reliable dedup on
+    # older libnotify: GNOME Shell does not honour the x-canonical-private-
+    # synchronous hint for notification-center replacement (verified on GNOME
+    # Shell 42 — both notifications stack), so on libnotify < 0.8.0 we emit
+    # plainly and notifications stack (unchanged, pre-feature behavior).
+    tier=0            # 0 = plain emit (no dedup); set to 1 iff replaces_id exists
     id_file=""
     prev_id=""
 
-    # Dedup is keyed on the FULL ABSOLUTE cwd (hashed), not the basename.
-    # Same basename in different locations → distinct notification slots.
-    # Skip dedup entirely when cwd is empty (jq absent, or cwd missing/empty):
-    # keying on an empty/constant string would make all project-less
-    # notifications replace each other.
+    # Feature-detect --replace-id / --print-id FIRST, and only set up dedup state
+    # when it can actually be used — so systems without replaces_id support leave
+    # no empty state dir behind.  The grep runs inside an 'if' so its non-zero
+    # exit under set -e/pipefail cannot abort the function.  Skip entirely when
+    # cwd is empty (jq absent, or cwd missing): keying on an empty/constant
+    # string would make all project-less notifications replace each other.
     if [ -n "$cwd" ]; then
-        # Hash the full path to a fixed-length, filename-safe key.
-        # cksum is POSIX and universally present on Linux; no new dependency.
-        # Strip the byte-count field, leaving only the checksum digits.
-        cksum_out="$(printf '%s' "$cwd" | cksum)"
-        key="${cksum_out%% *}"
-
-        # State dir: XDG_RUNTIME_DIR is per-user 0700 (preferred).
-        # /tmp fallback is uid-suffixed to prevent cross-user pre-creation on
-        # a shared host (XDG_RUNTIME_DIR is already per-user; /tmp is not).
-        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-            STATE_DIR="${XDG_RUNTIME_DIR}/claude-notifier"
-        else
-            STATE_DIR="/tmp/claude-notifier-$(id -u)"
-        fi
-        mkdir -p "$STATE_DIR" 2>/dev/null || true
-        # Guard: on shared /tmp, another user may have pre-created this path or
-        # planted a symlink. [ -O ] follows symlinks and tests effective ownership.
-        # If the dir is not ours, leave id_file empty so dedup degrades to Tier 3.
-        if [ -O "$STATE_DIR" ]; then
-            id_file="${STATE_DIR}/${key}"
-        else
-            id_file=""
-        fi
-
-        # Feature-detect --replace-id / --print-id (libnotify >= 0.8.0).
-        # Run inside an 'if' condition so grep's non-zero exit under set -e/pipefail
-        # cannot abort the function.
         help_out="$(notify-send --help 2>&1 || true)"
         if printf '%s' "$help_out" | grep -q -- '--replace-id' \
            && printf '%s' "$help_out" | grep -q -- '--print-id'; then
             # Tier 1: spec-compliant replaces_id — works on GNOME, KDE, dunst, mako.
             tier=1
+
+            # Dedup is keyed on the FULL ABSOLUTE cwd (hashed), not the basename,
+            # so the same basename in different locations gets distinct slots.
+            # cksum is POSIX and universally present on Linux; no new dependency.
+            # Strip the byte-count field, leaving only the checksum digits.
+            cksum_out="$(printf '%s' "$cwd" | cksum)"
+            key="${cksum_out%% *}"
+
+            # State dir: XDG_RUNTIME_DIR is per-user 0700 (preferred).
+            # /tmp fallback is uid-suffixed to prevent cross-user pre-creation on
+            # a shared host (XDG_RUNTIME_DIR is already per-user; /tmp is not).
+            if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+                STATE_DIR="${XDG_RUNTIME_DIR}/claude-notifier"
+            else
+                STATE_DIR="/tmp/claude-notifier-$(id -u)"
+            fi
+            mkdir -p "$STATE_DIR" 2>/dev/null || true
+            # Guard: on shared /tmp, another user may have pre-created this path
+            # or planted a symlink. [ -O ] follows symlinks and tests effective
+            # ownership. If the dir is not ours, leave id_file empty so dedup
+            # degrades to plain emit.
+            if [ -O "$STATE_DIR" ]; then
+                id_file="${STATE_DIR}/${key}"
+            fi
+
             prev_id="$([ -n "$id_file" ] && cat "$id_file" 2>/dev/null || true)"
             # Accept only a positive integer; discard stale or garbage content.
             case "$prev_id" in ''|*[!0-9]*) prev_id="" ;; esac
-        else
-            # Tier 2: GNOME-only stateless fallback via synchronous hint.
-            # KDE does not reliably honour this hint — deliberately GNOME-only.
-            case "${XDG_CURRENT_DESKTOP:-}" in
-                *GNOME*|*gnome*) tier=2 ;;
-            esac
         fi
     fi
 
@@ -199,14 +196,10 @@ emit_linux() {
             ''|*[!0-9]*) : ;;
             *) [ -n "$id_file" ] && { printf '%s' "$new_id" > "$id_file"; } 2>/dev/null || true ;;
         esac
-    elif [ "$tier" = 2 ]; then
-        # Tier 2: GNOME-only stateless dedup via synchronous-hint tag.
-        # Keyed on the full-path hash (same basename, different dir → distinct slots).
-        set -- "$@" "--hint=string:x-canonical-private-synchronous:claude-${key}"
-        set -- "$@" -- "$title" "$body"
-        notify-send "$@"
     else
-        # Tier 3: plain emit (old libnotify on non-GNOME desktop). Notifications stack.
+        # Plain emit — no dedup. libnotify < 0.8.0 (any desktop, including GNOME
+        # Shell, whose daemon does not honour x-canonical-private-synchronous for
+        # notification-center dedup). Notifications stack, as before.
         set -- "$@" -- "$title" "$body"
         notify-send "$@"
     fi

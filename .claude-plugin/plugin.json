@@ -1,7 +1,7 @@
 {
   "name": "desktop-notifier",
   "description": "Native desktop notification (Linux notify-send / macOS Notification Center) naming the project when a Claude Code session needs attention",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Chris Chrisostomou"
   }

@@ -204,13 +204,12 @@ This in-file approach works for standalone installs, but edits are **lost on plu
 
 ### Notification replacement (Linux)
 
-On Linux, each project gets at most one active notification. When Claude needs your attention in the same project twice in a row, the second notification **replaces** the first — no more stacking notifications.
+On Linux with a recent enough libnotify, each project gets at most one active notification: when Claude needs your attention in the same project twice in a row, the second notification **replaces** the first instead of stacking.
 
-This feature is **best-effort** and degrades gracefully depending on your notification daemon:
+This feature is **best-effort** and depends on your libnotify version:
 
-- **Modern libnotify** (≥ 0.8.0) on GNOME, KDE Plasma, dunst, mako, or any freedesktop-compliant daemon: full support. Notifications are replaced per project; an id file is stored under `${XDG_RUNTIME_DIR:-/tmp}/claude-notifier/` to track the current notification.
-- **Older libnotify on GNOME** (no `--replace-id`/`--print-id` flags): fallback coalescing via GNOME's synchronous hint; no id files written. Same-named projects in different directories are still tracked separately.
-- **Older libnotify on other desktops**: no dedup — notifications stack as before. This is graceful degradation, not an error.
+- **libnotify ≥ 0.8.0** (ships with Ubuntu 24.04+, current Fedora, KDE Plasma distros, Arch, etc.): full support via the freedesktop `replaces_id` mechanism — works across GNOME, KDE Plasma, dunst, mako, and any spec-compliant daemon. An id file is stored under `${XDG_RUNTIME_DIR:-/tmp}/claude-notifier/` to track the current notification per project.
+- **libnotify < 0.8.0** (e.g. Ubuntu 22.04, which ships libnotify 0.7.9): **no dedup — notifications stack as before.** `notify-send` on these versions has no working replacement mechanism. (GNOME Shell does *not* honour the older `x-canonical-private-synchronous` hint for notification-center replacement, so there is no reliable fallback; the tool emits plainly rather than pretend to dedup.) This is graceful degradation, not an error — the feature simply activates when you move to a newer distro.
 
 The dedup key is based on the **full absolute path** of your working directory (hashed for safety), not just the project basename. This means two directories with the same name in different locations (`~/projects/foo` and `~/archived/foo`) keep separate notification slots — each sees at most one active notification, and both might be visible at the same time. This divergence from the notification title (which shows only the basename) is intentional.
 
