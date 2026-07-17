@@ -1,0 +1,45 @@
+name: version-bump
+
+# Blocks merging a PR unless the plugin version is bumped ABOVE the base branch.
+# Make this a required status check in main's branch protection for it to gate merges.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify-version-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify version is bumped above base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          PLUGIN_FILE=.claude-plugin/plugin.json
+
+          head_plugin=$(jq -r '.version' "$PLUGIN_FILE")
+          base_plugin=$(git show "origin/${BASE_REF}:${PLUGIN_FILE}" | jq -r '.version')
+
+          echo "base ${PLUGIN_FILE} version: $base_plugin"
+          echo "head ${PLUGIN_FILE} version: $head_plugin"
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          # Reject anything that isn't strictly greater than the base version.
+          if [ "$head_plugin" = "$base_plugin" ]; then
+            fail "Version not bumped: still $head_plugin. Bump $PLUGIN_FILE above $base_plugin before merging."
+          fi
+
+          highest=$(printf '%s\n%s\n' "$base_plugin" "$head_plugin" | sort -V | tail -n1)
+          if [ "$highest" != "$head_plugin" ]; then
+            fail "Version went backwards: $head_plugin is lower than base $base_plugin. It must be strictly greater."
+          fi
+
+          echo "OK: $head_plugin > $base_plugin"
